@@ -98,11 +98,23 @@ fn kill_process_group(pid: u32) {
     }
     #[cfg(not(unix))]
     {
-        let _ = Command::new("taskkill")
-            .args(["/F", "/T", "/PID", &pid.to_string()])
-            .status();
+        let mut command = Command::new("taskkill");
+        command.args(["/F", "/T", "/PID", &pid.to_string()]);
+        suppress_console_window(&mut command);
+        let _ = command.status();
     }
 }
+
+#[cfg(windows)]
+fn suppress_console_window(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn suppress_console_window(_command: &mut Command) {}
 
 #[cfg(unix)]
 fn set_nonblocking(fd: i32) {
@@ -300,6 +312,7 @@ pub fn run_command_streaming(
         c.args(["-c", &script]);
         c
     };
+    suppress_console_window(&mut cmd);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
