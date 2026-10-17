@@ -1,6 +1,9 @@
 use std::path::Path;
 
-use security_framework::passwords::{delete_generic_password, get_generic_password, set_generic_password};
+#[cfg(target_os = "macos")]
+use security_framework::passwords::{
+    delete_generic_password, get_generic_password, set_generic_password,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::appdb;
@@ -142,29 +145,81 @@ pub struct SystemKeychain;
 /// Write a generic password and read it back. `keyring` can report success while the
 /// login keychain never stores the item, so the settings page keeps saying nothing is saved.
 fn write_account(service: &str, account: &str, value: &str) -> std::result::Result<(), String> {
-    set_generic_password(service, account, value.as_bytes()).map_err(|err| err.to_string())?;
-    match read_account(service, account)? {
-        Some(stored) if stored == value => Ok(()),
-        Some(_) => Err("the keychain stored a different value".into()),
-        None => Err("the keychain did not keep the key".into()),
+    #[cfg(target_os = "macos")]
+    {
+        set_generic_password(service, account, value.as_bytes()).map_err(|err| err.to_string())?;
+        match read_account(service, account)? {
+            Some(stored) if stored == value => Ok(()),
+            Some(_) => Err("the keychain stored a different value".into()),
+            None => Err("the keychain did not keep the key".into()),
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        let entry = keyring::Entry::new(service, account).map_err(|err| err.to_string())?;
+        entry.set_password(value).map_err(|err| err.to_string())
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (service, account, value);
+        Err("system keychain is unavailable on this platform".into())
     }
 }
 
 fn remove_account(service: &str, account: &str) -> std::result::Result<(), String> {
-    match delete_generic_password(service, account) {
-        Ok(()) => Ok(()),
-        Err(err) if err.code() == -25300 => Ok(()),
-        Err(err) => Err(err.to_string()),
+    #[cfg(target_os = "macos")]
+    {
+        match delete_generic_password(service, account) {
+            Ok(()) => Ok(()),
+            Err(err) if err.code() == -25300 => Ok(()),
+            Err(err) => Err(err.to_string()),
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        let entry = keyring::Entry::new(service, account).map_err(|err| err.to_string())?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(err) => Err(err.to_string()),
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (service, account);
+        Err("system keychain is unavailable on this platform".into())
     }
 }
 
 fn read_account(service: &str, account: &str) -> std::result::Result<Option<String>, String> {
-    match get_generic_password(service, account) {
-        Ok(bytes) => String::from_utf8(bytes)
-            .map(Some)
-            .map_err(|_| "keychain item is not text".to_string()),
-        Err(err) if err.code() == -25300 => Ok(None),
-        Err(err) => Err(err.to_string()),
+    #[cfg(target_os = "macos")]
+    {
+        match get_generic_password(service, account) {
+            Ok(bytes) => String::from_utf8(bytes)
+                .map(Some)
+                .map_err(|_| "keychain item is not text".to_string()),
+            Err(err) if err.code() == -25300 => Ok(None),
+            Err(err) => Err(err.to_string()),
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        let entry = keyring::Entry::new(service, account).map_err(|err| err.to_string())?;
+        match entry.get_password() {
+            Ok(password) => Ok(Some(password)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(err) => Err(err.to_string()),
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (service, account);
+        Err("system keychain is unavailable on this platform".into())
     }
 }
 
@@ -508,5 +563,4 @@ mod xai_key_tests {
         assert!(!raw.contains("file-secret"), "{raw}");
         assert!(!raw.contains("db-secret"), "{raw}");
     }
-
 }
